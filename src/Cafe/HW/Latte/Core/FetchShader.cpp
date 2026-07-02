@@ -170,10 +170,13 @@ void LatteFetchShader::CalculateFetchShaderVkHash()
 	EVP_DigestFinal_ex(ctx, shaDigest, NULL);
 	EVP_MD_CTX_free(ctx);
 
-	// fold SHA1 hash into a 64bit value
-	uint64 h = *(uint64*)(shaDigest + 0);
-	h += *(uint64*)(shaDigest + 8);
-	h += (uint64)*(uint32*)(shaDigest + 16);
+	// fold SHA1 hash into a 64bit value (use memcpy to avoid unaligned/strict-aliasing UB)
+	uint64 shaLow, shaMid;
+	uint32 shaHigh;
+	std::memcpy(&shaLow, shaDigest + 0, sizeof(shaLow));
+	std::memcpy(&shaMid, shaDigest + 8, sizeof(shaMid));
+	std::memcpy(&shaHigh, shaDigest + 16, sizeof(shaHigh));
+	uint64 h = shaLow + shaMid + (uint64)shaHigh;
 	this->vkPipelineHashFragment = h;
 }
 
@@ -249,11 +252,10 @@ void _fetchShaderDecompiler_parseInstruction_VTX_SEMANTIC(LatteFetchShader* pars
 	}
 	// add attribute
 	sint32 groupAttribIndex = attribGroup->attribCount;
-	if (attribGroup->attribCount < (groupAttribIndex + 1))
-	{
-		attribGroup->attribCount = (groupAttribIndex + 1);
-		attribGroup->attrib = (LatteParsedFetchShaderAttribute_t*)realloc(attribGroup->attrib, sizeof(LatteParsedFetchShaderAttribute_t) * attribGroup->attribCount);
-	}
+	attribGroup->attribCount = groupAttribIndex + 1;
+	// grow the attribute array with power-of-two capacity to avoid O(n^2) reallocation as attributes are appended
+	if ((attribGroup->attribCount & (attribGroup->attribCount - 1)) == 0)
+		attribGroup->attrib = (LatteParsedFetchShaderAttribute_t*)realloc(attribGroup->attrib, sizeof(LatteParsedFetchShaderAttribute_t) * (size_t)attribGroup->attribCount * 2);
 	attribGroup->attrib[groupAttribIndex].semanticId = semanticId;
 	attribGroup->attrib[groupAttribIndex].format = (uint8)dataFormat;
 	attribGroup->attrib[groupAttribIndex].fetchType = fetchType;
@@ -604,7 +606,7 @@ void LatteFetchShader::UnregisterInCache()
 		return;
 	s_spinlockFetchShaderCache.lock();
 	auto itr = s_fetchShaderByHash.find(m_cacheHash);
-	cemu_assert(itr == s_fetchShaderByHash.end());
+	cemu_assert(itr != s_fetchShaderByHash.end());
 	s_fetchShaderByHash.erase(itr);
 	s_spinlockFetchShaderCache.unlock();
 }
